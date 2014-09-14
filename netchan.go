@@ -160,14 +160,13 @@ L:
 		}
 	}
 	c.ctrl <- c
-	//fmt.Println("receiver closed")
 }
 
 func (c *connChan) sender() {
 	for {
 		select {
 		case p := <-c.s:
-			if p.Type == pktInvalid { // screw it all
+			if p == nil || p.Type == pktInvalid { // screw it all
 				break
 			}
 			if err := c.Encode(p); err != nil {
@@ -224,7 +223,11 @@ func (ct *ctOS) sucideLine() {
 		ct.lk.Lock()
 		delete(ct.nchans, ch)
 		ct.lk.Unlock()
+		if ct.IsClosed() {
+			break
+		}
 	}
+	close(ct.ctrl)
 }
 
 // IsClosed returns if the channel is closed or not
@@ -399,7 +402,7 @@ func (ct *ctOS) Close() error {
 
 	close(ct.r)
 	close(ct.s)
-	close(ct.ctrl)
+	//close(ct.ctrl)
 	return &errs
 }
 
