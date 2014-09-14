@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +18,7 @@ var (
 )
 
 func init() {
+	runtime.GOMAXPROCS(runtime.NumCPU())
 	l, err := net.Listen("tcp", "127.0.0.1:"+*listenPort)
 	if err != nil {
 		panic(err)
