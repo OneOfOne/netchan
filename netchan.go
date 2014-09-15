@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"os"
 
 	oerr "github.com/OneOfOne/go-utils/errors"
 	osync "github.com/OneOfOne/go-utils/sync"
@@ -195,7 +194,7 @@ func (c *connChan) Close() error {
 	return c.Conn.Close()
 }
 
-type ctOS struct {
+type Channel struct {
 	id []byte
 	lk osync.SpinLock
 
@@ -211,15 +210,15 @@ type ctOS struct {
 	log  *log.Logger
 }
 
-func (ct *ctOS) addChan(ch *connChan) {
+func (ct *Channel) addChan(ch *connChan) {
 	ct.lk.Lock()
 	ct.nchans[ch] = struct{}{}
 	ct.lk.Unlock()
 }
 
-func (ct *ctOS) sucideLine() {
+func (ct *Channel) sucideLine() {
 	for ch := range ct.ctrl {
-		ct.log.Printf("channel [id=%x] disconnected from %v", ch.id, ch.RemoteAddr())
+		ct.printf("channel [id=%x] disconnected from %v", ch.id, ch.RemoteAddr())
 		ct.lk.Lock()
 		delete(ct.nchans, ch)
 		ct.lk.Unlock()
@@ -230,8 +229,16 @@ func (ct *ctOS) sucideLine() {
 	close(ct.ctrl)
 }
 
+func (ct *Channel) printf(format string, val ...interface{}) {
+	ct.lk.Lock()
+	if ct.log != nil {
+		ct.log.Printf(format, val...)
+	}
+	ct.lk.Unlock()
+}
+
 // IsClosed returns if the channel is closed or not
-func (ct *ctOS) IsClosed() (st bool) {
+func (ct *Channel) IsClosed() (st bool) {
 	ct.lk.Lock()
 	st = len(ct.nchans) == 0 && len(ct.listeners) == 0
 	ct.lk.Unlock()
@@ -240,7 +247,7 @@ func (ct *ctOS) IsClosed() (st bool) {
 
 // Recv returns who sent the message, the message and the status of the channel
 // optionally blocks until there's a message to receive.
-func (ct *ctOS) Recv(block bool) (id []byte, val interface{}, st ChannelStatus) {
+func (ct *Channel) Recv(block bool) (id []byte, val interface{}, st ChannelStatus) {
 	if ct.IsClosed() {
 		st = StatusClosed
 		return
@@ -269,7 +276,7 @@ func (ct *ctOS) Recv(block bool) (id []byte, val interface{}, st ChannelStatus) 
 }
 
 // Send sends a message over the network, optionally blocks until it finds a receiver.
-func (ct *ctOS) Send(block bool, val interface{}) (st ChannelStatus) {
+func (ct *Channel) Send(block bool, val interface{}) (st ChannelStatus) {
 	if ct.IsClosed() {
 		return StatusClosed
 	}
@@ -295,7 +302,7 @@ func (ct *ctOS) Send(block bool, val interface{}) (st ChannelStatus) {
 // SendTo like send but tries to send to a specific client,
 // returns StatusNotFound if the client doesn't exist anymore.
 // note that SendTo always blocks until the message is sent or it errors out
-func (ct *ctOS) SendTo(id []byte, val interface{}) (st ChannelStatus) {
+func (ct *Channel) SendTo(id []byte, val interface{}) (st ChannelStatus) {
 	if ct.IsClosed() {
 		return StatusClosed
 	}
@@ -316,10 +323,25 @@ func (ct *ctOS) SendTo(id []byte, val interface{}) (st ChannelStatus) {
 	return
 }
 
+func (ct *Channel) SendAll(block bool, val interface{}) (st []ChannelStatus) {
+	ct.lk.Lock()
+	chs := make([]*connChan, len(ct.nchans))
+	st = make([]ChannelStatus, len(chs))
+	i := 0
+	for ch := range ct.nchans {
+		chs[i] = ch
+	}
+	ct.lk.Unlock()
+	for i, ch := range chs {
+		st[i] = ch.Send(val)
+	}
+	return
+}
+
 // Connect connects to a remote channel
 // it can be called multiple times with different addresses
 // (or really the same one if you're that kind of a person)
-func (ct *ctOS) Connect(network, addr string) error {
+func (ct *Channel) Connect(network, addr string) error {
 	conn, err := net.Dial(network, addr)
 	if err != nil {
 		return err
@@ -328,21 +350,21 @@ func (ct *ctOS) Connect(network, addr string) error {
 }
 
 // ConnectTo conencts to a specific net.Conn
-func (ct *ctOS) ConnectTo(conn net.Conn) error {
+func (ct *Channel) ConnectTo(conn net.Conn) error {
 	ch := newConnChan(conn, ct.r, ct.s, ct.ctrl)
 	if err := ch.clientHandshake(ct.id); err != nil {
-		ct.log.Printf("error during handshake to %s: %v", conn.RemoteAddr(), err)
+		ct.printf("error during handshake to %s: %v", conn.RemoteAddr(), err)
 		return err
 	}
 	ct.addChan(ch)
 
-	ct.log.Printf("channel [id=%x] connected to %s", ch.id, conn.RemoteAddr())
+	ct.printf("channel [id=%x] connected to %s", ch.id, conn.RemoteAddr())
 	return nil
 }
 
 // ListenAndServe listens on the specific network and address waiting for remote channels
 // it can be called multiple times with different addresses
-func (ct *ctOS) ListenAndServe(network, addr string) error {
+func (ct *Channel) ListenAndServe(network, addr string) error {
 	l, err := net.Listen(network, addr)
 	if err != nil {
 		return err
@@ -352,11 +374,11 @@ func (ct *ctOS) ListenAndServe(network, addr string) error {
 }
 
 // Serve well, it serves a listener, ok golint?
-func (ct *ctOS) Serve(l net.Listener) error {
+func (ct *Channel) Serve(l net.Listener) error {
 	ct.lk.Lock()
 	ct.listeners = append(ct.listeners, l)
 	ct.lk.Unlock()
-	ct.log.Printf("serving on %s", l.Addr())
+	ct.printf("serving on %s", l.Addr())
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -364,16 +386,16 @@ func (ct *ctOS) Serve(l net.Listener) error {
 		}
 		ch := newConnChan(conn, ct.r, ct.s, ct.ctrl)
 		if err := ch.serverHandshake(); err != nil {
-			ct.log.Printf("error during handshake from %s: %v", conn.RemoteAddr(), err)
+			ct.printf("error during handshake from %s: %v", conn.RemoteAddr(), err)
 			continue
 		}
 		ct.addChan(ch)
-		ct.log.Printf("channel [id=%x] connected from %s", ch.id, conn.RemoteAddr())
+		ct.printf("channel [id=%x] connected from %s", ch.id, conn.RemoteAddr())
 	}
 }
 
 // Close closes all the listeners and connected channels
-func (ct *ctOS) Close() error {
+func (ct *Channel) Close() error {
 	var errs oerr.MultiError
 
 	// kill listeners first if any
@@ -407,7 +429,7 @@ func (ct *ctOS) Close() error {
 }
 
 // Stats returns information about the current connections
-func (ct *ctOS) Stats() (activeConnections, activeListeners int) {
+func (ct *Channel) Stats() (activeConnections, activeListeners int) {
 	ct.lk.Lock()
 	activeConnections, activeListeners = len(ct.nchans), len(ct.listeners)
 	ct.lk.Unlock()
@@ -415,8 +437,10 @@ func (ct *ctOS) Stats() (activeConnections, activeListeners int) {
 }
 
 // Logger returns the *log.Logger instance the channel is using.
-func (ct *ctOS) Logger() *log.Logger {
-	return ct.log
+func (ct *Channel) SetLogger(l *log.Logger) {
+	ct.lk.Lock()
+	ct.log = l
+	ct.lk.Unlock()
 }
 
 // Sender defines a write-only channel
@@ -454,30 +478,26 @@ type Interface interface {
 	IsClosed() bool
 }
 
-type Channel struct {
-	*ctOS
-}
-
-func (c Channel) String() string {
-	ac, al := c.Stats()
-	return fmt.Sprintf("Channel [id=%x, active=%d, listeners=%d]", c.id, ac, al)
+func (ct *Channel) String() string {
+	ac, al := ct.Stats()
+	return fmt.Sprintf("Channel [id=%x, active=%d, listeners=%d]", ct.id, ac, al)
 }
 
 // ListenAndServe is an alias for New(initialCap).ListenAndServe(network, addr)
-func ListenAndServe(initialCap int, network, addr string) (ct Channel, err error) {
+func ListenAndServe(initialCap int, network, addr string) (ct *Channel, err error) {
 	ct = New(initialCap)
 	return ct, ct.ListenAndServe(network, addr)
 }
 
 // Connect is an alias for New(1).Connect(network, addr)
-func Connect(network, addr string) (ct Channel, err error) {
+func Connect(network, addr string) (ct *Channel, err error) {
 	ct = New(1)
 	return ct, ct.Connect(network, addr)
 }
 
 // New returns a new Channel with the initial cap size for the receiver and connection pool
-func New(initialCap int) Channel {
-	ct := &ctOS{
+func New(initialCap int) *Channel {
+	ct := &Channel{
 		id: genID(),
 
 		nchans: make(map[*connChan]struct{}, initialCap),
@@ -487,10 +507,10 @@ func New(initialCap int) Channel {
 
 		ctrl: make(chan *connChan, 0),
 
-		log: log.New(os.Stdout, "netchan: ", log.LstdFlags),
+		//log: log.New(os.Stdout, "netchan: ", log.LstdFlags),
 	}
 	go ct.sucideLine()
-	return Channel{ct}
+	return ct
 }
 
 // don't silently break the api

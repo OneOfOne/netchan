@@ -16,7 +16,7 @@ func SelectRecv(recvs []Receiver) (r Receiver, val interface{}) {
 	for i, rch := range recvs {
 		cases[i] = reflect.SelectCase{Dir: reflect.SelectRecv}
 		switch rch := rch.(type) {
-		case Channel:
+		case *Channel:
 			cases[i].Chan = reflect.ValueOf(rch.r)
 		case LocalReceiver:
 			cases[i].Chan = reflect.ValueOf((<-chan interface{})(rch))
@@ -51,7 +51,7 @@ func SelectSend(targets []Sender, val interface{}) (sch Sender) {
 	for i, sch := range targets {
 		cases[i] = reflect.SelectCase{Dir: reflect.SelectSend}
 		switch sch := sch.(type) {
-		case Channel:
+		case *Channel:
 			cases[i].Chan = reflect.ValueOf(sch.s)
 			cases[i].Send = p
 		case LocalSender:
