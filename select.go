@@ -1,37 +1,66 @@
 package netchan
 
-import "runtime"
+import "reflect"
 
-// SelectRecv loops on multiple receivers until it gets a value, it will
-// return nil, nil if block==false and there was nothing to receive
-func SelectRecv(block bool, recvs []Receiver) (Receiver, interface{}) {
-	for {
-		for _, ch := range recvs {
-			_, val, st := ch.Recv(false)
-			if st == StatusOK {
-				return ch, val
-			}
+// SelectRecv loops on multiple receivers until it gets a value,
+// it blocks until a value is returned or all channels are closed.
+// this function doesn't panic.
+func SelectRecv(recvs []Receiver) (r Receiver, val interface{}) {
+	defer func() {
+		if recover() != nil {
+			r = nil
+			val = nil
 		}
-		if !block {
-			return nil, nil
+	}()
+	cases := make([]reflect.SelectCase, len(recvs))
+	for i, rch := range recvs {
+		cases[i] = reflect.SelectCase{Dir: reflect.SelectRecv}
+		switch rch := rch.(type) {
+		case Channel:
+			cases[i].Chan = reflect.ValueOf(rch.r)
+		case LocalReceiver:
+			cases[i].Chan = reflect.ValueOf((<-chan interface{})(rch))
+		default:
+			panic("SelectRecv only supports Channel and/or LocalReceiver")
 		}
-		runtime.Gosched()
 	}
+	i, v, ok := reflect.Select(cases)
+	if ok {
+		r = recvs[i]
+		val = v.Interface()
+		if val, ok := val.(*pkt); ok {
+			return r, val.Value
+		}
+		return
+	}
+	return
 }
 
 // SelectSend loops on multiple senders and returns the first channel that
-// was able to send or nil if block == false and nothing was sent.
-func SelectSend(block bool, targets []Sender, val interface{}) Sender {
-	for {
-		for _, ch := range targets {
-			st := ch.Send(false, val)
-			if st == StatusOK {
-				return ch
-			}
+// was able to send.
+// it returns the target that sent the value or returns nil if all channels were closed
+// this function doesn't panic.
+func SelectSend(targets []Sender, val interface{}) (sch Sender) {
+	defer func() {
+		if recover() != nil {
+			sch = nil
 		}
-		if !block {
-			return nil
+	}()
+	cases := make([]reflect.SelectCase, len(targets))
+	p := reflect.ValueOf(&pkt{Type: pktData, Value: val})
+	for i, sch := range targets {
+		cases[i] = reflect.SelectCase{Dir: reflect.SelectSend}
+		switch sch := sch.(type) {
+		case Channel:
+			cases[i].Chan = reflect.ValueOf(sch.s)
+			cases[i].Send = p
+		case LocalSender:
+			cases[i].Chan = reflect.ValueOf((chan<- interface{})(sch))
+			cases[i].Send = reflect.ValueOf(val)
+		default:
+			panic("SelectSend only supports Channel and/or LocalSender")
 		}
-		runtime.Gosched()
 	}
+	i, _, _ := reflect.Select(cases)
+	return targets[i]
 }
