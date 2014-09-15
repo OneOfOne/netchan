@@ -3,7 +3,6 @@ package netchan
 import (
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"runtime"
 	"strings"
@@ -19,19 +18,20 @@ var (
 
 func init() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
+}
+
+// this is super ugly, t.Parallel didn't work for some reason
+func TestServerClient(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:"+*listenPort)
 	if err != nil {
-		panic(err)
+		t.Error(err)
+		t.FailNow()
 	}
 	if *listenPort == "0" {
 		*listenPort = strings.Split(l.Addr().String(), ":")[1]
 	}
-	log.Println("listening on", l.Addr())
+	t.Log("listening on", l.Addr())
 	go sch.Serve(l)
-}
-
-// this is super ugly, t.Parallel didn't work for some reason
-func Test(t *testing.T) {
 	wg.Add(20)
 	go testServerChannel(t)
 	go testClientChannel(t)
@@ -70,4 +70,28 @@ func testClientChannel(t *testing.T) {
 		}(i)
 	}
 	//wg.Wait()
+}
+
+func TestSelectRecv(t *testing.T) {
+	nch, lch := New(1), make(chan interface{}, 0)
+	go func() {
+		lch <- 10
+	}()
+	if _, val := SelectRecv([]Receiver{nch, LocalReceiver(lch)}); val != 10 {
+		t.Fatalf("expected %v, received %v", 10, val)
+	}
+}
+
+func TestSelectSend(t *testing.T) {
+	nch, lch := New(1), make(chan interface{}, 0)
+	go func() {
+		if SelectSend([]Sender{nch, LocalSender(lch)}, 10) == nil {
+			t.Fatal("Select returned nil")
+		}
+
+	}()
+	val := <-lch
+	if val != 10 {
+		t.Fatalf("expected %v, received %v", 10, val)
+	}
 }
